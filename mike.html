@@ -1,0 +1,203 @@
+<?php
+
+include_once('../includes/dbConnection.php');
+include_once '../includes/functions.php';
+
+session_start();
+
+//preparation for ajax usage
+if (isset($_GET['ajax']) && $_GET['ajax']=='true'){
+    //echo "AJAX IN THE BUILDING";
+    $handle_wt_php = false;
+}else{
+    $handle_wt_php = true;
+}
+$_SESSION["login_error_msg"] ="";
+if (isset($_POST['phone']) && !empty($_POST['phone'])){
+    $_SESSION["phone"] = cleanse(strtolower($_POST['phone']), $conn);
+}
+else {
+    $_SESSION["login_error_msg"] = " - Please Enter Your phone<br/>";
+}   
+
+
+if (isset($_POST['pin']) && !empty($_POST['pin'])){
+    $_SESSION["pin"] = cleanse(strtolower($_POST['pin']), $conn);
+}
+else {
+    $_SESSION["login_error_msg"] .= " - Please Enter Your pin<br/>";
+}   
+
+
+
+
+if($_SESSION["login_error_msg"] != ""){
+    if($handle_wt_php){
+        //header('Location:../public/login.php?fail='.$_SESSION['login_error_msg']);
+    }else{
+        //echo $_SESSION["login_error_msg"];
+        $error = array('status' => '0', 
+            'message' => $_SESSION["login_error_msg"],
+
+        );
+        echo json_encode($error);
+
+    }           
+}else{
+    $pin=$_SESSION["pin"];
+    $morepin=explode(',', $pin);
+    //if(count($morepin)>)
+    $_SESSION['message']="";
+    for ($i=0; $i<count($morepin); $i++){
+      $pin=$pin[$i];
+      $query = "SELECT * FROM pin_clash where pin='".$pin."'";
+      $result = $conn->query($query);
+      $rows = $result->num_rows;
+      if ($rows == 1){ 
+
+          $data=mysqli_fetch_assoc($result);
+          if ($data['status']=='available') {
+
+            $creditNow=CreditUserPin($data['amount'], $_SESSION['phone']);
+
+            if($creditNow==1){
+              $_SESSION['message']='Transaction successful ['.$i.']<br>';
+              updatePinStatus($conn, $pin);
+              $error = array('status' => '1', 
+                  'message' => $_SESSION['message'],
+
+              );
+              echo json_encode($error);
+
+            }else{
+
+              $_SESSION['message']='Cannot recharge temporily, check your info ['.$i.']<br>';
+              $error = array('status' => '0', 
+                  'message' => 'Cannot recharge temporily, check your info.',
+
+              );
+              echo json_encode($error);
+
+            }
+          }else{
+            if ($data['status']=='used') {
+              $message="This pin has already been used ";
+            }else{
+              $message="Invalid Pin ";
+            }
+            $_SESSION['message']=$message.'['.$i.']<br>';
+            $error = array('status' => '0', 
+                'message' => $message,
+
+            );
+            echo json_encode($error);
+          }
+      }else{
+
+          $_SESSION['message']='Pin not available ['.$i.']<br>';
+          $error = array('status' => '0', 
+              'message' => $_SESSION['message'],
+
+          );
+          echo json_encode($error);
+      }
+    }
+
+}
+
+
+
+  function updatePinStatus($conn, $pin){
+    
+    $query2 = "UPDATE pin_clash SET status='used' WHERE pin='$pin'";
+    $result2 = $conn->query($query2);
+
+    if ($result2) {
+      $success="success";
+    }else{
+      $success='fail';
+    }
+    return $success;
+  }
+
+
+function cleanse($field,$conn) {//To protect against sql Injection
+    $result = trim($field);
+    $result = stripslashes($result);
+    $result = mysqli_real_escape_string($conn, $result); //for prevention of mySQL injection
+
+    return $result;
+}
+
+function CreditUserPin( $amount, $phone){
+
+  $url='https://api.flutterwave.com/v3/bills';
+  $randomID="Tranx-".rand(1000000, 999999999999).time();
+  $data = array('country' => 'NG',
+              'type' => 'AIRTIME',
+              'biller_name' => 'AIRTIME', 
+              'amount' => $amount,
+              'reference' => $randomID,
+              'customer' => $phone);
+
+  $credit=callAPIPin("POST", $url, $data);
+
+  //print_r ($data);
+  //echo $url;
+  if($credit['status']=="success"){
+   
+    return 1;
+  }else{
+    //LogBillPayment($conn, $user_id, $randomID, $amount, 'AIRTIME', 'failed');
+    return $credit;
+  }
+
+}
+
+function callAPIPin($method, $url, $data){
+    
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, $url);
+    $online=0;
+    if($online==1){
+      curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 1);
+      curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, 1);
+      curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
+    }else{
+      curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
+      curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, 0);
+      curl_setopt($ch, CURLOPT_RETURNTRANSFER, true); 
+    }
+    /*curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, 0);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);*/
+
+    curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
+    
+    curl_setopt($ch, CURLOPT_POST, true);
+
+    $headers[] = "Content-Type:application/json";
+    $headers[] = 'Authorization: FLWSECK-53da1f7e0ea7665de04dc8751aa6b61e-X';
+    curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+    
+    curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
+
+
+
+    $result = curl_exec($ch);
+    if (curl_errno($ch)) {
+        $mss= 'Error:'. $url. curl_error($ch);
+        //$err = array('message' => $mss, 'code'=>'error');
+        $err = array('message' => 'network error, please check your internet', 'code'=>'error', 'status'=>'error');
+        return $err;
+    }
+    curl_close ($ch);
+    $result = json_decode($result, true);
+    //print($result);
+    return $result;
+}
+
+
+
+
+?>
